@@ -84,6 +84,38 @@ def _unregister(q: queue.Queue[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# NMEA line broadcast (raw sentences → browser log)
+# ---------------------------------------------------------------------------
+
+_nmea_clients: list[queue.Queue[str]] = []
+_nmea_clients_lock = threading.Lock()
+
+
+def broadcast_nmea(line: str) -> None:
+    with _nmea_clients_lock:
+        for q in list(_nmea_clients):
+            try:
+                q.put_nowait(line)
+            except queue.Full:
+                pass
+
+
+def _register_nmea() -> queue.Queue[str]:
+    q: queue.Queue[str] = queue.Queue(maxsize=50)
+    with _nmea_clients_lock:
+        _nmea_clients.append(q)
+    return q
+
+
+def _unregister_nmea(q: queue.Queue[str]) -> None:
+    with _nmea_clients_lock:
+        try:
+            _nmea_clients.remove(q)
+        except ValueError:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # State merging — combine GGA + RMC fields into one broadcast per fix
 # ---------------------------------------------------------------------------
 
@@ -135,6 +167,27 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             finally:
                 _unregister(q)
+
+        elif self.path == "/nmea":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            q_nmea = _register_nmea()
+            try:
+                while True:
+                    try:
+                        line = q_nmea.get(timeout=20)
+                        self.wfile.write(f"data: {line}\n\n".encode())
+                        self.wfile.flush()
+                    except queue.Empty:
+                        self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                _unregister_nmea(q_nmea)
 
         else:
             self.send_response(404)
@@ -322,7 +375,10 @@ def gps_thread_serial(port: str, baud: int | None) -> None:
             while True:
                 raw = ser.readline()
                 if raw:
-                    fix = parse_nmea(raw.decode("ascii", errors="replace").strip())
+                    line = raw.decode("ascii", errors="replace").strip()
+                    if any(line.startswith(p) for p in NMEA_PREFIXES):
+                        broadcast_nmea(line)
+                    fix = parse_nmea(line)
                     if fix:
                         update_state(fix)
     except Exception as exc:
@@ -429,6 +485,8 @@ def gps_thread_usb(vid: int, pid: int) -> None:
                 while b"\n" in buf:
                     line_bytes, buf = buf.split(b"\n", 1)
                     line = line_bytes.decode("ascii", errors="replace").strip()
+                    if any(line.startswith(p) for p in NMEA_PREFIXES):
+                        broadcast_nmea(line)
                     fix = parse_nmea(line)
                     if fix:
                         update_state(fix)
