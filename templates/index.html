@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>GPS Tracker</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,sans-serif}
+  #map{position:absolute;inset:0}
+  #panel{
+    position:absolute;top:12px;right:12px;z-index:1000;
+    background:rgba(255,255,255,.93);backdrop-filter:blur(4px);
+    border-radius:10px;padding:14px 18px;min-width:210px;
+    box-shadow:0 2px 10px rgba(0,0,0,.2);font-size:13px;line-height:1.7
+  }
+  #panel h2{font-size:14px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px}
+  #panel table{border-collapse:collapse;width:100%}
+  #panel td{padding:1px 4px}
+  #panel td:first-child{color:#555;white-space:nowrap;padding-right:10px}
+  .sep>td{border-top:1px solid #e5e7eb;padding-top:6px}
+  #dot{width:9px;height:9px;border-radius:50%;background:#d1d5db;flex-shrink:0}
+  #dot.live{background:#22c55e;animation:blink 1.4s ease-in-out infinite}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+  .arrow{display:inline-block;margin-right:3px;transition:transform .6s ease}
+  #trail-toggle{
+    margin-top:10px;font-size:11px;color:#2563eb;cursor:pointer;
+    background:none;border:none;padding:0;text-decoration:underline
+  }
+  #skyplot{display:block;margin-top:8px;padding-top:6px;border-top:1px solid #e5e7eb}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="panel">
+  <h2><span id="dot"></span>GPS Tracker</h2>
+  <table id="info">
+    <tr><td colspan="2" style="color:#9ca3af">Waiting for GPS signal…</td></tr>
+  </table>
+  <button id="trail-toggle" onclick="toggleTrail()">Hide trail</button>
+  <svg id="skyplot" width="124" height="124" viewBox="0 0 124 124">
+    <circle cx="62" cy="62" r="57" fill="#f8fafc" stroke="#e5e7eb" stroke-width="1"/>
+    <circle cx="62" cy="62" r="38" fill="none" stroke="#e5e7eb" stroke-width="0.5" stroke-dasharray="2,2"/>
+    <circle cx="62" cy="62" r="19" fill="none" stroke="#e5e7eb" stroke-width="0.5" stroke-dasharray="2,2"/>
+    <line x1="62" y1="5" x2="62" y2="119" stroke="#e5e7eb" stroke-width="0.5"/>
+    <line x1="5" y1="62" x2="119" y2="62" stroke="#e5e7eb" stroke-width="0.5"/>
+    <text x="62" y="3" text-anchor="middle" dominant-baseline="hanging" font-size="8" fill="#9ca3af">N</text>
+    <text x="62" y="121" text-anchor="middle" font-size="8" fill="#9ca3af">S</text>
+    <text x="2" y="65" text-anchor="start" font-size="8" fill="#9ca3af">W</text>
+    <text x="122" y="65" text-anchor="end" font-size="8" fill="#9ca3af">E</text>
+    <g id="sat-dots"></g>
+  </svg>
+</div>
+<script>
+const map = L.map('map').setView([52.37, 4.89], 18);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+  maxZoom:19,
+  attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+}).addTo(map);
+
+const posIcon = L.divIcon({
+  className:'',
+  html:'<div style="width:14px;height:14px;background:#2563eb;border:3px solid #fff;border-radius:50%;box-shadow:0 1px 5px rgba(0,0,0,.4)"></div>',
+  iconSize:[14,14],iconAnchor:[7,7]
+});
+
+let marker = null, centred = false;
+const trail = [];
+const polyline = L.polyline([],{color:'#2563eb',weight:3,opacity:.65}).addTo(map);
+let showTrail = true;
+
+function toggleTrail(){
+  showTrail = !showTrail;
+  polyline.setStyle({opacity: showTrail ? .65 : 0});
+  document.getElementById('trail-toggle').textContent =
+    showTrail ? 'Hide trail' : 'Show trail';
+}
+
+const FIX_LABEL = {
+  '0':'No fix','1':'GPS','2':'DGPS','3':'PPS',
+  '4':'RTK','5':'Float RTK','6':'Estimated','7':'Manual','8':'Simulation'
+};
+
+const COMPASS = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+function bearing(deg){ return COMPASS[Math.round(deg/22.5)%16]; }
+
+function fmtTime(t){
+  if(!t||t.length<6) return '—';
+  return t.slice(0,2)+':'+t.slice(2,4)+':'+t.slice(4,6)+' UTC';
+}
+function fmtDate(d){
+  if(!d||d.length<6) return '—';
+  return '20'+d.slice(4,6)+'-'+d.slice(2,4)+'-'+d.slice(0,2);
+}
+
+function r(label, value, sep){
+  return `<tr${sep?' class="sep"':''}><td>${label}</td><td><b>${value}</b></td></tr>`;
+}
+function v(x){ return x !== undefined ? x : '—'; }
+
+const src = new EventSource('/events');
+
+src.onmessage = function(evt){
+  const d = JSON.parse(evt.data);
+  const pos = [d.lat, d.lon];
+
+  document.getElementById('dot').className = 'live';
+
+  if(!marker){
+    marker = L.marker(pos,{icon:posIcon}).addTo(map);
+    map.setView(pos,15);
+    centred = true;
+  } else {
+    marker.setLatLng(pos);
+  }
+
+  trail.push(pos);
+  if(trail.length > 2000) trail.shift();
+  polyline.setLatLngs(trail);
+
+  const cog = d.cog;
+  const arrow = cog !== undefined
+    ? `<span class="arrow" style="transform:rotate(${cog}deg)">↑</span>`
+    : '';
+  const cogStr = cog !== undefined ? `${arrow}${cog}° ${bearing(cog)}` : '—';
+  const fixStr = d.fix ? `${FIX_LABEL[d.fix]||d.fix} (${d.fix})` : '—';
+  const accStr = d.hacc !== undefined
+    ? d.hacc + ' m'
+    : d.hdop !== undefined ? '~' + (d.hdop * 5).toFixed(0) + ' m' : '—';
+
+  document.getElementById('info').innerHTML =
+    r('Lat',      d.lat.toFixed(6)+'°') +
+    r('Lon',      d.lon.toFixed(6)+'°') +
+    r('Alt',      d.alt !== undefined ? d.alt+' m' : '—',        true) +
+    r('Course',   cogStr) +
+    r('Speed',    d.spd_kmh !== undefined ? d.spd_kmh+' km/h' : '—') +
+    r('Time (UTC)', fmtTime(d.time),                              true) +
+    r('Date',     fmtDate(d.date)) +
+    r('Fix',      fixStr,                                         true) +
+    r('Accuracy', accStr) +
+    r('HDOP',     v(d.hdop)) +
+    r('Satellites', d.sats !== undefined
+      ? d.sats + (d.sv_total ? ' / '+d.sv_total : '')
+      : '—');
+  if (d.sv && d.sv.length) {
+    const cx = 62, cy = 62, R = 57;
+    document.getElementById('sat-dots').innerHTML = d.sv.map(s => {
+      const dist = (1 - (s.el||0) / 90) * R;
+      const rad  = (s.az||0) * Math.PI / 180;
+      const x = (cx + dist * Math.sin(rad)).toFixed(1);
+      const y = (cy - dist * Math.cos(rad)).toFixed(1);
+      const c  = s.s >= 30 ? '#22c55e' : s.s >= 15 ? '#f59e0b' : s.s > 0 ? '#ef4444' : '#d1d5db';
+      const tc = s.s >= 15 ? 'white' : '#555';
+      return `<circle cx="${x}" cy="${y}" r="8" fill="${c}" opacity=".9"/>`
+           + `<text x="${x}" y="${y}" text-anchor="middle" dominant-baseline="central"`
+           + ` font-size="7" fill="${tc}" font-weight="600">${s.p}</text>`;
+    }).join('');
+  }
+};
+
+src.onerror = function(){
+  document.getElementById('dot').className = '';
+  document.getElementById('info').innerHTML =
+    '<tr><td colspan="2" style="color:#ef4444">Connection lost</td></tr>';
+};
+</script>
+</body>
+</html>
