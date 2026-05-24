@@ -20,6 +20,7 @@ import struct
 import sys
 import threading
 import time
+from datetime import datetime
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -122,6 +123,70 @@ def _unregister_nmea(q: queue.Queue[str]) -> None:
 _cmd_queue: queue.Queue[bytes] = queue.Queue(maxsize=32)
 
 
+# Registry: sentence id → callable(fields) → list of (label, value) rows
+_ACK_RESULT = {"0": "Invalid command", "1": "Unsupported", "2": "Action failed", "3": "Success"}
+_PMTK010_MSG = {"001": "System initialising", "002": "Reserved"}
+
+_PMTK_HANDLERS: dict[str, Any] = {
+    "$PMTK010": lambda f: [
+        ("Event",   "GPS startup / reset"),
+        ("Status",  _PMTK010_MSG.get(f[1], f[1])),
+    ],
+    "$PMTK001": lambda f: [
+        ("ACK for", f"PMTK{f[1]}"),
+        ("Result",  f"{f[2]} \u2014 {_ACK_RESULT.get(f[2], f[2])}"),
+    ],
+    "$PMTK500": lambda f: [
+        ("Command",  "Set update interval"),
+        ("Interval", f"{f[1]} ms"),
+    ],
+}
+
+_PMTK514_NAMES = [
+    "GLL", "RMC", "VTG", "GGA", "GSA", "GSV",
+    "GRS", "GST", "MALM", "MEPH", "MDGP", "MDBG", "ZDA", "MCHN",
+]
+
+
+def _fmt_pmtk514(f: list[str]) -> list[tuple[str, str]]:
+    active = [
+        (name, f"rate={f[i + 1]}")
+        for i, name in enumerate(_PMTK514_NAMES)
+        if i + 1 < len(f) and f[i + 1] != "0"
+    ]
+    return [("Command", "NMEA output rates")] + (active or [("Status", "all disabled")])
+
+
+_PMTK_HANDLERS["$PMTK514"] = _fmt_pmtk514
+_PMTK_HANDLERS["$PMTK705"] = lambda f: [
+    ("Firmware", f[1]),
+    ("Build",    f[2]),
+    ("Model",    f[3]),
+    ("Version",  f[4]),
+]
+
+
+def _handle_rx(line: str) -> None:
+    fields = line.split("*")[0].split(",")
+    handler = _PMTK_HANDLERS.get(fields[0])
+    if not handler:
+        return
+    try:
+        rows = handler(fields)
+        for i, (label, value) in enumerate(rows):
+            sym = "\u2514" if i == len(rows) - 1 else "\u251c"
+            print(f"  {sym} {label:<18}: {value}")
+    except (IndexError, KeyError):
+        pass
+
+
+def _log(direction: str, line: str) -> None:
+    ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    print(f"[{ts}] {direction}  {line}")
+    if direction == "RX":
+        _handle_rx(line)
+
+
 # ---------------------------------------------------------------------------
 # State merging — combine GGA + RMC fields into one broadcast per fix
 # ---------------------------------------------------------------------------
@@ -209,7 +274,7 @@ class Handler(BaseHTTPRequestHandler):
             body = self.rfile.read(length)
             try:
                 _cmd_queue.put_nowait(body)
-                print(f"→ {body.decode(errors='replace')}")
+                # print(f"→ {body.decode(errors='replace')}")
             except queue.Full:
                 pass
             self.send_response(204)
@@ -397,7 +462,9 @@ def gps_thread_serial(port: str, baud: int | None) -> None:
             while True:
                 try:
                     while True:
-                        ser.write(_cmd_queue.get_nowait())
+                        cmd = _cmd_queue.get_nowait()
+                        ser.write(cmd)
+                        _log("TX", cmd.decode("ascii", errors="replace").strip())
                 except queue.Empty:
                     pass
                 raw = ser.readline()
@@ -405,6 +472,7 @@ def gps_thread_serial(port: str, baud: int | None) -> None:
                     line = raw.decode("ascii", errors="replace").strip()
                     if any(line.startswith(p) for p in NMEA_PREFIXES):
                         broadcast_nmea(line)
+                        _log("RX", line)
                     fix = parse_nmea(line)
                     if fix:
                         update_state(fix)
@@ -521,13 +589,15 @@ def gps_thread_usb(vid: int, pid: int) -> None:
                     line = line_bytes.decode("ascii", errors="replace").strip()
                     if any(line.startswith(p) for p in NMEA_PREFIXES):
                         broadcast_nmea(line)
+                        _log("RX", line)
                     fix = parse_nmea(line)
                     if fix:
                         update_state(fix)
-                        print(line)
                 try:
                     while True:
-                        dev.write(ep_out.bEndpointAddress, _cmd_queue.get_nowait(), timeout=1000)
+                        cmd = _cmd_queue.get_nowait()
+                        dev.write(ep_out.bEndpointAddress, cmd, timeout=1000)
+                        _log("TX", cmd.decode("ascii", errors="replace").strip())
                 except queue.Empty:
                     pass
             except usb.core.USBTimeoutError:

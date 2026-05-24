@@ -27,10 +27,30 @@
   .arrow{display:inline-block;margin-right:3px;transition:transform .6s ease}
   #trail-toggle,
   .cmd-btn{
-    margin-top:10px;font-size:11px;color:#2563eb;cursor:pointer;
+    font-size:11px;color:#2563eb;cursor:pointer;
     background:none;border:none;padding:0;text-decoration:underline
   }
+  #trail-toggle{display:block}
+  #cmd-section{margin-top:8px;padding-top:6px;border-top:1px solid #e5e7eb}
   #skyplot{display:block;margin-top:8px;padding-top:6px;border-top:1px solid #e5e7eb}
+  #firmware-info,
+  #ack-info{
+    display:none;margin-top:8px;padding-top:6px;border-top:1px solid #e5e7eb;
+    font-size:11px;color:#374151;
+  }
+  #firmware-info table,
+  #ack-info table{border-collapse:collapse;width:100%;table-layout:fixed}
+  #firmware-info td,
+  #ack-info td{padding:1px 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #firmware-info td:first-child,
+  #ack-info td:first-child{color:#555;width:88px}
+  #response-panel{
+    display:none;margin-top:8px;padding-top:6px;border-top:1px solid #e5e7eb;
+    font-size:11px;color:#374151;
+  }
+  #response-panel table{border-collapse:collapse;width:100%;table-layout:fixed}
+  #response-panel td{padding:1px 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #response-panel td:first-child{color:#555;width:88px}
   #nmea-log{margin-top:8px;padding-top:6px;border-top:1px solid #e5e7eb;overflow:hidden}
   .nmea-line{
     font-family:monospace;font-size:9px;white-space:nowrap;
@@ -47,9 +67,9 @@
   <table id="info">
     <tr><td colspan="2" style="color:#9ca3af">Waiting for GPS signal…</td></tr>
   </table>
-  <div style="display:flex;gap:12px">
+  <div style="display:flex;gap:12px;margin-top:10px">
     <button id="trail-toggle" onclick="toggleTrail()">Hide trail</button>
-    <button class="cmd-btn" onclick="sendCmd('$PMTK000*32\r\n', this)">Ping GPS</button>
+    <button class="cmd-btn" onclick="centreMap()">Centre map</button>
   </div>
   <svg id="skyplot" width="124" height="124" viewBox="0 0 124 124">
     <circle cx="62" cy="62" r="57" fill="#f8fafc" stroke="#e5e7eb" stroke-width="1"/>
@@ -63,10 +83,32 @@
     <text x="122" y="65" text-anchor="end" font-size="8" fill="#9ca3af">E</text>
     <g id="sat-dots"></g>
   </svg>
+  <div id="snr-wrap" style="display:none;margin-top:6px;border-top:1px solid #e5e7eb;padding-top:6px">
+    <svg id="snr-chart" height="60" style="width:100%;overflow:visible"></svg>
+  </div>
   <div id="nmea-log"></div>
+  <div id="cmd-section">
+    <div style="display:flex;gap:12px;flex-wrap:wrap">
+      <button class="cmd-btn" onclick="sendCmd('$PMTK000*32\r\n', this)">Ping GPS</button>
+      <button class="cmd-btn" onclick="sendCmd('$PMTK605*31\r\n', this)">Firmware</button>
+      <button class="cmd-btn" onclick="sendCmd('$PMTK400*36\r\n', this)">Interval</button>
+      <button class="cmd-btn" onclick="sendCmd('$PMTK414*33\r\n', this)">Output Config</button>
+    </div>
+    <div style="margin-top:8px;padding-top:6px;border-top:1px solid #e5e7eb">
+      <div style="font-size:10px;color:#6b7280;margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em">Reset</div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap">
+        <button class="cmd-btn" title="Hot start — fast fix, mild" onclick="sendCmd('$PMTK101*32\r\n', this)">Hot start</button>
+        <button class="cmd-btn" title="Warm start — re-acquires with partial data" onclick="sendCmd('$PMTK102*31\r\n', this)">Warm start</button>
+        <button class="cmd-btn" style="color:#b45309" title="Cold start — clears satellite data, fix takes longer" onclick="sendCmd('$PMTK103*30\r\n', this)">Cold start</button>
+        <button class="cmd-btn" style="color:#dc2626" title="Full cold start — complete reset, avoid if possible" onclick="sendCmd('$PMTK104*37\r\n', this)">Full reset</button>
+      </div>
+    </div>
+    <div id="response-panel"></div>
+  </div>
 </div>
 <script>
-const map = L.map('map').setView([52.37, 4.89], 18);
+const DEFAULT_ZOOM = 19;
+const map = L.map('map').setView([52.37, 4.89], DEFAULT_ZOOM);
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
   maxZoom:19,
   attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -74,14 +116,18 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
 
 const posIcon = L.divIcon({
   className:'',
-  html:'<div style="width:14px;height:14px;background:#2563eb;border:3px solid #fff;border-radius:50%;box-shadow:0 1px 5px rgba(0,0,0,.4)"></div>',
-  iconSize:[14,14],iconAnchor:[7,7]
+  html:'<div style="width:20px;height:20px;background:#2563eb;border:3px solid #fff;border-radius:50%;box-shadow:0 1px 5px rgba(0,0,0,.4)"></div>',
+  iconSize:[20,20],iconAnchor:[10,10]
 });
 
 let marker = null, centred = false;
 const trail = [];
 const polyline = L.polyline([],{color:'#2563eb',weight:3,opacity:.65}).addTo(map);
 let showTrail = true;
+
+function centreMap(){
+  if(marker) map.setView(marker.getLatLng(), DEFAULT_ZOOM);
+}
 
 function toggleTrail(){
   showTrail = !showTrail;
@@ -122,7 +168,7 @@ src.onmessage = function(evt){
 
   if(!marker){
     marker = L.marker(pos,{icon:posIcon}).addTo(map);
-    map.setView(pos,15);
+    map.setView(pos, DEFAULT_ZOOM);
     centred = true;
   } else {
     marker.setLatLng(pos);
@@ -169,21 +215,85 @@ src.onmessage = function(evt){
            + `<text x="${x}" y="${y}" text-anchor="middle" dominant-baseline="central"`
            + ` font-size="7" fill="${tc}" font-weight="600">${s.p}</text>`;
     }).join('');
+
+    // SNR bar chart
+    const sats = d.sv.slice().sort((a, b) => a.p - b.p);
+    const chart = document.getElementById('snr-chart');
+    const W = chart.parentElement.clientWidth || 204;
+    const H = 50, labelH = 10, gap = 2;
+    const barW = Math.max(4, Math.floor((W - gap * (sats.length - 1)) / sats.length));
+    chart.setAttribute('viewBox', `0 0 ${W} ${H + labelH}`);
+    chart.innerHTML = sats.map((s, i) => {
+      const x = i * (barW + gap);
+      const h = Math.max(2, Math.round((Math.min(s.s, 50) / 50) * H));
+      const c = s.s >= 30 ? '#22c55e' : s.s >= 15 ? '#f59e0b' : s.s > 0 ? '#ef4444' : '#d1d5db';
+      return `<rect x="${x}" y="${H - h}" width="${barW}" height="${h}" fill="${c}" rx="1"/>`
+           + `<text x="${x + barW/2}" y="${H + labelH - 1}" text-anchor="middle" font-size="6" fill="#9ca3af">${s.p}</text>`;
+    }).join('');
+    document.getElementById('snr-wrap').style.display = 'block';
   }
 };
-
 src.onerror = function(){
   document.getElementById('dot').className = '';
   document.getElementById('info').innerHTML =
     '<tr><td colspan="2" style="color:#ef4444">Connection lost</td></tr>';
 };
 
+const ACK_RESULT = {'0':'Invalid command','1':'Unsupported','2':'Action failed','3':'Success'};
+const PMTK010_MSG = {'001':'System initialising','002':'Reserved'};
+
+const PMTK_HANDLERS = {
+  '$PMTK010': f => ({
+    'Event':  'GPS startup / reset',
+    'Status': PMTK010_MSG[f[1]] || f[1],
+  }),
+  '$PMTK001': f => ({
+    'ACK for': 'PMTK' + f[1],
+    'Result':  f[2] + ' \u2014 ' + (ACK_RESULT[f[2]] || f[2]),
+  }),
+  '$PMTK500': f => ({
+    'Command':  'Set update interval',
+    'Interval': f[1] + ' ms',
+  }),
+  '$PMTK514': f => {
+    const names = ['GLL','RMC','VTG','GGA','GSA','GSV','GRS','GST','MALM','MEPH','MDGP','MDBG','ZDA','MCHN'];
+    const out = {'Command': 'NMEA output rates'};
+    names.forEach((n, i) => { if(f[i+1] && f[i+1] !== '0') out[n] = 'rate=' + f[i+1]; });
+    if(Object.keys(out).length === 1) out['Status'] = 'all disabled';
+    return out;
+  },
+  '$PMTK705': f => ({
+    'Firmware': f[1],
+    'Build':    f[2],
+    'Model':    f[3],
+    'Version':  f[4],
+  }),
+};
+
 const nmeaSrc = new EventSource('/nmea');
 nmeaSrc.onmessage = function(evt){
+  const line = evt.data;
+  const prefix = line.split('*')[0].split(',')[0];
+  const handler = PMTK_HANDLERS[prefix];
+
+  if(handler){
+    try{
+      const fields = line.split('*')[0].split(',');
+      const data = handler(fields);
+      const panel = document.getElementById('response-panel');
+      panel.innerHTML = '<table>' +
+        Object.entries(data).map(([k,v]) =>
+          `<tr><td>${k}</td><td><b>${v}</b></td></tr>`).join('') +
+        '</table>';
+      panel.style.display = 'block';
+    }catch(e){}
+    return;
+  }
+
   const log = document.getElementById('nmea-log');
   const div = document.createElement('div');
   div.className = 'nmea-line';
-  div.textContent = evt.data;
+  div.textContent = line;
   log.insertBefore(div, log.firstChild);
   div.addEventListener('animationend', () => div.remove());
   while(log.children.length > 6) log.removeChild(log.lastChild);

@@ -1,6 +1,6 @@
 # gps-demo
 
-Live GPS viewer (for macOS). Connects to a <s>Bluetooth or</s> USB GPS receiver and displays position, speed, altitude, and satellites on an interactive map (OpenStreetMap).
+Real-time NMEA viewer and PMTK console for the TSI 737A+ MTK GPS receiver (for macOS). Connects to a <s>Bluetooth or</s> USB GPS receiver and displays position, speed, altitude, and satellites on an interactive map (OpenStreetMap).
 
 
 ## Devices
