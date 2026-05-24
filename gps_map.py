@@ -31,7 +31,7 @@ DEFAULT_PID = 0x3329
 DEFAULT_WEB_PORT = 8080
 
 BAUD_CANDIDATES = (4800, 9600, 38400, 19200, 57600, 115200)
-NMEA_PREFIXES = ("$GP", "$GN", "$GL", "$GA")
+NMEA_PREFIXES = ("$GP", "$GN", "$GL", "$GA", "$PMTK")
 
 # ---------------------------------------------------------------------------
 # Jinja2 template environment
@@ -116,6 +116,13 @@ def _unregister_nmea(q: queue.Queue[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Outbound command queue (browser → GPS device)
+# ---------------------------------------------------------------------------
+
+_cmd_queue: queue.Queue[bytes] = queue.Queue(maxsize=32)
+
+
+# ---------------------------------------------------------------------------
 # State merging — combine GGA + RMC fields into one broadcast per fix
 # ---------------------------------------------------------------------------
 
@@ -195,6 +202,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         pass  # silence HTTP access logs
+
+    def do_POST(self) -> None:
+        if self.path == "/send":
+            length = min(int(self.headers.get("Content-Length", 0)), 256)
+            body = self.rfile.read(length)
+            try:
+                _cmd_queue.put_nowait(body)
+                print(f"→ {body.decode(errors='replace')}")
+            except queue.Full:
+                pass
+            self.send_response(204)
+            self.end_headers()
+        else:
+            self.send_response(404)
+            self.end_headers()
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +395,11 @@ def gps_thread_serial(port: str, baud: int | None) -> None:
     try:
         with _open_serial(port, baud) as ser:
             while True:
+                try:
+                    while True:
+                        ser.write(_cmd_queue.get_nowait())
+                except queue.Empty:
+                    pass
                 raw = ser.readline()
                 if raw:
                     line = raw.decode("ascii", errors="replace").strip()
@@ -437,6 +464,12 @@ def gps_thread_usb(vid: int, pid: int) -> None:
             and usb.util.endpoint_type(e.bmAttributes) == usb.util.ENDPOINT_TYPE_BULK  # type: ignore[attr-defined]
         )
 
+    def is_bulk_out(e: object) -> bool:
+        return (
+            usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_OUT  # type: ignore[attr-defined]
+            and usb.util.endpoint_type(e.bmAttributes) == usb.util.ENDPOINT_TYPE_BULK  # type: ignore[attr-defined]
+        )
+
     comm_intf = None
     data_intf = None
     fallback_intf = None
@@ -457,6 +490,7 @@ def gps_thread_usb(vid: int, pid: int) -> None:
         return
 
     ep_in: Any = usb.util.find_descriptor(read_intf, find_all=False, custom_match=is_bulk_in)
+    ep_out: Any = usb.util.find_descriptor(read_intf, find_all=False, custom_match=is_bulk_out)
     if ep_in is None:
         ep_in = fallback_ep
     if ep_in is None:
@@ -491,6 +525,11 @@ def gps_thread_usb(vid: int, pid: int) -> None:
                     if fix:
                         update_state(fix)
                         print(line)
+                try:
+                    while True:
+                        dev.write(ep_out.bEndpointAddress, _cmd_queue.get_nowait(), timeout=1000)
+                except queue.Empty:
+                    pass
             except usb.core.USBTimeoutError:
                 pass
     except Exception as exc:

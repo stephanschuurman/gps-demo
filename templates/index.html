@@ -17,15 +17,16 @@
     box-shadow:0 2px 10px rgba(0,0,0,.2);font-size:13px;line-height:1.7
   }
   #panel h2{font-size:14px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:6px}
-  #panel table{border-collapse:collapse;width:100%}
-  #panel td{padding:1px 4px}
-  #panel td:first-child{color:#555;white-space:nowrap;padding-right:10px}
+  #panel table{border-collapse:collapse;width:100%;table-layout:fixed}
+  #panel td{padding:1px 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #panel td:first-child{color:#555;white-space:nowrap;padding-right:10px;width:88px}
   .sep>td{border-top:1px solid #e5e7eb;padding-top:6px}
   #dot{width:9px;height:9px;border-radius:50%;background:#d1d5db;flex-shrink:0}
   #dot.live{background:#22c55e;animation:blink 1.4s ease-in-out infinite}
   @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
   .arrow{display:inline-block;margin-right:3px;transition:transform .6s ease}
-  #trail-toggle{
+  #trail-toggle,
+  .cmd-btn{
     margin-top:10px;font-size:11px;color:#2563eb;cursor:pointer;
     background:none;border:none;padding:0;text-decoration:underline
   }
@@ -46,7 +47,10 @@
   <table id="info">
     <tr><td colspan="2" style="color:#9ca3af">Waiting for GPS signal…</td></tr>
   </table>
-  <button id="trail-toggle" onclick="toggleTrail()">Hide trail</button>
+  <div style="display:flex;gap:12px">
+    <button id="trail-toggle" onclick="toggleTrail()">Hide trail</button>
+    <button class="cmd-btn" onclick="sendCmd('$PMTK000*32\r\n', this)">Ping GPS</button>
+  </div>
   <svg id="skyplot" width="124" height="124" viewBox="0 0 124 124">
     <circle cx="62" cy="62" r="57" fill="#f8fafc" stroke="#e5e7eb" stroke-width="1"/>
     <circle cx="62" cy="62" r="38" fill="none" stroke="#e5e7eb" stroke-width="0.5" stroke-dasharray="2,2"/>
@@ -96,7 +100,7 @@ function bearing(deg){ return COMPASS[Math.round(deg/22.5)%16]; }
 
 function fmtTime(t){
   if(!t||t.length<6) return '—';
-  return t.slice(0,2)+':'+t.slice(2,4)+':'+t.slice(4,6)+' UTC';
+  return t.slice(0,2)+':'+t.slice(2,4)+':'+t.slice(4,6)+'';
 }
 function fmtDate(d){
   if(!d||d.length<6) return '—';
@@ -136,7 +140,7 @@ src.onmessage = function(evt){
   const fixStr = d.fix ? `${FIX_LABEL[d.fix]||d.fix} (${d.fix})` : '—';
   const accStr = d.hacc !== undefined
     ? d.hacc + ' m'
-    : d.hdop !== undefined ? '~' + (d.hdop * 5).toFixed(0) + ' m' : '—';
+    : '—';
 
   document.getElementById('info').innerHTML =
     r('Lat',      d.lat.toFixed(6)+'°') +
@@ -184,6 +188,15 @@ nmeaSrc.onmessage = function(evt){
   div.addEventListener('animationend', () => div.remove());
   while(log.children.length > 6) log.removeChild(log.lastChild);
 };
+
+function sendCmd(cmd, btn){
+  const label = btn.textContent;
+  btn.disabled = true;
+  fetch('/send', {method:'POST', headers:{'Content-Type':'text/plain'}, body:cmd})
+    .then(r => { btn.textContent = r.ok ? '✓ Sent' : '✗ Error'; })
+    .catch(() => { btn.textContent = '✗ Error'; })
+    .finally(() => { setTimeout(() => { btn.textContent = label; btn.disabled = false; }, 1500); });
+}
 </script>
 </body>
 </html>

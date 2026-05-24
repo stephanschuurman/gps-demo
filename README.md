@@ -1,14 +1,39 @@
 # gps-demo
 
-Live GPS viewer for macOS. Connects to a Bluetooth or USB GPS receiver and displays position, speed, altitude, and satellites on an interactive map (OpenStreetMap).
+Live GPS viewer (for macOS). Connects to a <s>Bluetooth or</s> USB GPS receiver and displays position, speed, altitude, and satellites on an interactive map (OpenStreetMap).
+
 
 ## Devices
 
-| Script | Connection | Device |
-|---|---|---|
-| `connect_bt_gps.py` | Bluetooth (RFCOMM) | BT A+ GPS (737-A+) |
-| `connect_usb_gps.py` | USB serial / PyUSB | MTK GPS Receiver (0x0E8D:0x3329) |
-| `gps_map.py` | USB serial / PyUSB | MTK GPS Receiver — with map viewer |
+Developed for and tested with: **TSI, 737A+** (that uses as MediaTek chip).
+
+- Wireless GPS Receiver
+- Model: 737A+
+- FCC ID: OUP971260101
+
+| USB Property | Value |
+|---|---|
+| USB Vendor Name | MTK (MediaTek) |
+| USB Product Name | GPS Receiver |
+| idVendor | `0x0E8D` |
+| idProduct | `0x3329` |
+| bDeviceClass | `0x02` (CDC) |
+
+| Bluetooth Property | Value |
+|---|---|
+| Device Name | `BT A+ GPS` |
+
+`$PMTK000*32\r\n`
+
+For a full impementation have a look at  [schwehr/gpsd](https://github.com/schwehr/gpsd/).
+
+## Scripts
+
+| Script | Connection | Device | Status | 
+|---|---|---|---|
+| `connect_bt_gps.py` | Bluetooth (RFCOMM) | BT A+ GPS (737-A+) | Not working! |
+| `connect_usb_gps.py` | USB serial / PyUSB | MTK GPS Receiver (0x0E8D:0x3329) | OK |
+| `gps_map.py` | USB serial / PyUSB | MTK GPS Receiver — with map viewer | OK |
 
 ## Installation
 
